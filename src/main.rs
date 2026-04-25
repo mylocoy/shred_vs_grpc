@@ -1,13 +1,23 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::HashMap;
-use tokio::sync::mpsc;
-use tokio::time::{Duration, Instant};
-use futures_util::StreamExt;
-use futures_util::SinkExt;
-use dotenvy::dotenv;
 use chrono::Local;
+use dotenvy::dotenv;
+use futures_util::SinkExt;
+use futures_util::StreamExt;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
+
+fn grpc_x_token() -> Option<String> {
+    std::env::var("GRPC_X_TOKEN").ok().and_then(|value| {
+        let value = value.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
 
 struct Stats {
     grpc_first: AtomicU64,
@@ -31,29 +41,44 @@ impl Stats {
     }
 
     fn print_stats(&self) {
-        let total = self.grpc_first.load(Ordering::Relaxed) + self.shred_first.load(Ordering::Relaxed);
-        let grpc_first_percent = (self.grpc_first.load(Ordering::Relaxed) as f64 / total as f64) * 100.0;
-        let shred_first_percent = (self.shred_first.load(Ordering::Relaxed) as f64 / total as f64) * 100.0;
-        
+        let total =
+            self.grpc_first.load(Ordering::Relaxed) + self.shred_first.load(Ordering::Relaxed);
+        let grpc_first_percent =
+            (self.grpc_first.load(Ordering::Relaxed) as f64 / total as f64) * 100.0;
+        let shred_first_percent =
+            (self.shred_first.load(Ordering::Relaxed) as f64 / total as f64) * 100.0;
+
         let grpc_avg_delay = if self.grpc_delay_count.load(Ordering::Relaxed) > 0 {
-            self.grpc_delay_sum.load(Ordering::Relaxed) as f64 / self.grpc_delay_count.load(Ordering::Relaxed) as f64
-        } else { 0.0 };
-        
+            self.grpc_delay_sum.load(Ordering::Relaxed) as f64
+                / self.grpc_delay_count.load(Ordering::Relaxed) as f64
+        } else {
+            0.0
+        };
+
         let shred_avg_delay = if self.shred_delay_count.load(Ordering::Relaxed) > 0 {
-            self.shred_delay_sum.load(Ordering::Relaxed) as f64 / self.shred_delay_count.load(Ordering::Relaxed) as f64
-        } else { 0.0 };
+            self.shred_delay_sum.load(Ordering::Relaxed) as f64
+                / self.shred_delay_count.load(Ordering::Relaxed) as f64
+        } else {
+            0.0
+        };
 
         let overall_grpc_avg = (self.grpc_delay_sum.load(Ordering::Relaxed) as f64) / total as f64;
-        let overall_shred_avg = (self.shred_delay_sum.load(Ordering::Relaxed) as f64) / total as f64;
+        let overall_shred_avg =
+            (self.shred_delay_sum.load(Ordering::Relaxed) as f64) / total as f64;
 
-        println!("[{}] INFO: ===== 端点性能对比 =====", Local::now().format("%H:%M:%S%.3f"));
-        println!("[{}] INFO: GRPC   : 首先接收 {:6.2}%, 落后时平均延迟 {:6.2}ms, 总体平均延迟 {:6.2}ms", 
+        println!(
+            "[{}] INFO: ===== 端点性能对比 =====",
+            Local::now().format("%H:%M:%S%.3f")
+        );
+        println!(
+            "[{}] INFO: GRPC   : 首先接收 {:6.2}%, 落后时平均延迟 {:6.2}ms, 总体平均延迟 {:6.2}ms",
             Local::now().format("%H:%M:%S%.3f"),
             grpc_first_percent,
             grpc_avg_delay,
             overall_grpc_avg
         );
-        println!("[{}] INFO: SHRED  : 首先接收 {:6.2}%, 落后时平均延迟 {:6.2}ms, 总体平均延迟 {:6.2}ms", 
+        println!(
+            "[{}] INFO: SHRED  : 首先接收 {:6.2}%, 落后时平均延迟 {:6.2}ms, 总体平均延迟 {:6.2}ms",
             Local::now().format("%H:%M:%S%.3f"),
             shred_first_percent,
             shred_avg_delay,
@@ -65,7 +90,10 @@ impl Stats {
 async fn run_grpc_client(tx: mpsc::Sender<(u64, u128)>) {
     dotenv().ok();
     let url = std::env::var("GRPC_URL").expect("GRPC_URL must be set");
+    let x_token = grpc_x_token();
     let mut client = yellowstone_grpc_client::GeyserGrpcClient::build_from_shared(url)
+        .unwrap()
+        .x_token(x_token)
         .unwrap()
         .tls_config(yellowstone_grpc_client::ClientTlsConfig::new().with_native_roots())
         .unwrap()
@@ -97,29 +125,31 @@ async fn run_grpc_client(tx: mpsc::Sender<(u64, u128)>) {
     let mut last_slot = 0;
     while let Some(message) = stream.next().await {
         match message {
-            Ok(msg) => {
-                match msg.update_oneof {
-                    Some(yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof::Transaction(sut)) => {
-                        if sut.slot != last_slot {
-                            last_slot = sut.slot;
-                            let timestamp = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis();
-                            let _ = tx.send((sut.slot, timestamp)).await;
-                        }
+            Ok(msg) => match msg.update_oneof {
+                Some(
+                    yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof::Transaction(sut),
+                ) => {
+                    if sut.slot != last_slot {
+                        last_slot = sut.slot;
+                        let timestamp = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis();
+                        let _ = tx.send((sut.slot, timestamp)).await;
                     }
-                    Some(yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof::Ping(_)) => {
-                        let _ = subscribe_tx
-                            .send(yellowstone_grpc_proto::geyser::SubscribeRequest {
-                                ping: Some(yellowstone_grpc_proto::geyser::SubscribeRequestPing { id: 1 }),
-                                ..Default::default()
-                            })
-                            .await;
-                    }
-                    _ => {}
                 }
-            }
+                Some(yellowstone_grpc_proto::geyser::subscribe_update::UpdateOneof::Ping(_)) => {
+                    let _ = subscribe_tx
+                        .send(yellowstone_grpc_proto::geyser::SubscribeRequest {
+                            ping: Some(yellowstone_grpc_proto::geyser::SubscribeRequestPing {
+                                id: 1,
+                            }),
+                            ..Default::default()
+                        })
+                        .await;
+                }
+                _ => {}
+            },
             Err(_) => break,
         }
     }
@@ -128,9 +158,10 @@ async fn run_grpc_client(tx: mpsc::Sender<(u64, u128)>) {
 async fn run_shred_client(tx: mpsc::Sender<(u64, u128)>) {
     dotenv().ok();
     let url = std::env::var("SHRED_URL").expect("SHRED_URL must be set");
-    let mut client = jito_protos::shredstream::shredstream_proxy_client::ShredstreamProxyClient::connect(url)
-        .await
-        .unwrap();
+    let mut client =
+        jito_protos::shredstream::shredstream_proxy_client::ShredstreamProxyClient::connect(url)
+            .await
+            .unwrap();
     let mut stream = client
         .subscribe_entries(jito_protos::shredstream::SubscribeEntriesRequest {})
         .await
@@ -139,10 +170,11 @@ async fn run_shred_client(tx: mpsc::Sender<(u64, u128)>) {
 
     let mut processed_slots = std::collections::HashSet::new();
     while let Some(slot_entry) = stream.message().await.unwrap() {
-        let _entries = match bincode::deserialize::<Vec<solana_entry::entry::Entry>>(&slot_entry.entries) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let _entries =
+            match bincode::deserialize::<Vec<solana_entry::entry::Entry>>(&slot_entry.entries) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
 
         if !processed_slots.contains(&slot_entry.slot) {
             processed_slots.insert(slot_entry.slot);
@@ -157,9 +189,18 @@ async fn run_shred_client(tx: mpsc::Sender<(u64, u128)>) {
 
 #[tokio::main]
 async fn main() {
-    println!("[{}] INFO: 开始对比 GRPC 和 SHRED 服务性能...", Local::now().format("%H:%M:%S%.3f"));
-    println!("[{}] INFO: 测试持续时间: 30秒", Local::now().format("%H:%M:%S%.3f"));
-    println!("[{}] INFO: 测试端点: GRPC, SHRED", Local::now().format("%H:%M:%S%.3f"));
+    println!(
+        "[{}] INFO: 开始对比 GRPC 和 SHRED 服务性能...",
+        Local::now().format("%H:%M:%S%.3f")
+    );
+    println!(
+        "[{}] INFO: 测试持续时间: 30秒",
+        Local::now().format("%H:%M:%S%.3f")
+    );
+    println!(
+        "[{}] INFO: 测试端点: GRPC, SHRED",
+        Local::now().format("%H:%M:%S%.3f")
+    );
 
     let (grpc_tx, mut grpc_rx) = mpsc::channel::<(u64, u128)>(100);
     let (shred_tx, mut shred_rx) = mpsc::channel::<(u64, u128)>(100);
@@ -182,7 +223,7 @@ async fn main() {
                 if let Some(shred_ts) = shred_slots.get(&slot) {
                     let diff = timestamp as i128 - *shred_ts as i128;
                     if !first_slot_received {
-                        println!("[{}] INFO: 所有端点都已接收到第一个 slot, 开始正式统计...", 
+                        println!("[{}] INFO: 所有端点都已接收到第一个 slot, 开始正式统计...",
                             Local::now().format("%H:%M:%S%.3f"));
                         first_slot_received = true;
                     }
@@ -202,7 +243,7 @@ async fn main() {
                 if let Some(grpc_ts) = grpc_slots.get(&slot) {
                     let diff = timestamp as i128 - *grpc_ts as i128;
                     if !first_slot_received {
-                        println!("[{}] INFO: 所有端点都已接收到第一个 slot, 开始正式统计...", 
+                        println!("[{}] INFO: 所有端点都已接收到第一个 slot, 开始正式统计...",
                             Local::now().format("%H:%M:%S%.3f"));
                         first_slot_received = true;
                     }

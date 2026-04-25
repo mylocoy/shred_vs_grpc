@@ -22,8 +22,11 @@
 
 ```env
 GRPC_URL=your_grpc_endpoint
+GRPC_X_TOKEN=your_grpc_x_token
 SHRED_URL=your_shred_endpoint
 ```
+
+`GRPC_X_TOKEN` 是可选项；如果已配置，程序会在 gRPC 订阅请求里自动附带 `x-token` 请求头。
 
 ## 运行方法
 

@@ -1,18 +1,15 @@
+use dotenvy::dotenv;
 use jito_protos::shredstream::{
     shredstream_proxy_client::ShredstreamProxyClient, SubscribeEntriesRequest,
 };
-use dotenvy::dotenv;
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::HashSet;
-
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     dotenv().ok();
-    let url = std::env::var("SHRED_URL").expect("SHRED_URL must be set");   
-    let mut client = ShredstreamProxyClient::connect(url)
-        .await
-        .unwrap();
+    let url = std::env::var("SHRED_URL").expect("SHRED_URL must be set");
+    let mut client = ShredstreamProxyClient::connect(url).await.unwrap();
     let mut stream = client
         .subscribe_entries(SubscribeEntriesRequest {})
         .await
@@ -29,18 +26,14 @@ async fn main() -> Result<(), std::io::Error> {
                     continue;
                 }
             };
-        
+
         if !processed_slots.contains(&slot_entry.slot) {
             processed_slots.insert(slot_entry.slot);
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis();
-            println!(
-                "Slot: {}, Timestamp: {}",
-                slot_entry.slot,
-                timestamp
-            );
+            println!("Slot: {}, Timestamp: {}", slot_entry.slot, timestamp);
         }
     }
     Ok(())

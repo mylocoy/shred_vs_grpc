@@ -7,9 +7,20 @@ use log::{error, info};
 use tokio_stream::StreamExt;
 use yellowstone_grpc_client::{ClientTlsConfig, GeyserGrpcClient};
 use yellowstone_grpc_proto::geyser::{
-    CommitmentLevel, SubscribeRequest, SubscribeRequestFilterTransactions, SubscribeRequestPing,
-    subscribe_update::UpdateOneof,
+    subscribe_update::UpdateOneof, CommitmentLevel, SubscribeRequest,
+    SubscribeRequestFilterTransactions, SubscribeRequestPing,
 };
+
+fn grpc_x_token() -> Option<String> {
+    std::env::var("GRPC_X_TOKEN").ok().and_then(|value| {
+        let value = value.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    })
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,9 +28,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pretty_env_logger::init();
 
     let url = std::env::var("GRPC_URL").expect("GRPC_URL must be set");
-    
+    let x_token = grpc_x_token();
+
     // 创建 gRPC 客户端
     let mut client = GeyserGrpcClient::build_from_shared(url)?
+        .x_token(x_token)?
         .tls_config(ClientTlsConfig::new().with_native_roots())?
         .connect()
         .await?;
